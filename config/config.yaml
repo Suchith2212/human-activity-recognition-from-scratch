@@ -1,0 +1,64 @@
+# ============================================================================
+# Human Activity Recognition — Configuration
+# ============================================================================
+# All hyperparameters, paths, and settings centralized here.
+# Override via CLI arguments or environment variables.
+# ============================================================================
+
+# --- Data Paths ---
+data:
+  # Path to the UCI HAR Dataset root directory
+  # Update this to your local path after downloading the dataset
+  raw_dir: "data/raw/UCI HAR Dataset"
+  processed_dir: "data/processed"
+  combined_dir: "data/processed/Combined"
+
+# --- Activity Labels ---
+activities:
+  1: "WALKING"
+  2: "WALKING_UPSTAIRS"
+  3: "WALKING_DOWNSTAIRS"
+  4: "SITTING"
+  5: "STANDING"
+  6: "LAYING"
+
+# --- Signal Processing ---
+signal:
+  sampling_rate_hz: 50       # Sensor sampling rate (Hz)
+  window_duration_sec: 10    # Window duration in seconds
+  window_size: 500           # sampling_rate_hz × window_duration_sec
+  offset: 100                # Offset to skip initial transient samples
+  overlap_ratio: 0.0         # Overlap between consecutive windows (0.0 = no overlap)
+
+# --- Feature Extraction ---
+features:
+  use_tsfel: true            # Use TSFEL for automatic feature extraction
+  tsfel_domains:             # Which TSFEL feature domains to extract
+    - temporal
+    - statistical
+
+# --- Decision Tree (from scratch) ---
+decision_tree:
+  max_depth: 5
+  min_samples_split: 2
+  criterion: "entropy"       # "entropy" or "gini"
+
+# --- Training ---
+training:
+  test_size: 0.3
+  random_seed: 42
+  scaling: true              # Apply StandardScaler normalization
+
+# --- Data Augmentation ---
+augmentation:
+  enabled: false
+  jitter_sigma: 0.05         # Gaussian noise standard deviation
+  scaling_sigma: 0.1         # Scaling factor standard deviation
+  time_warp_sigma: 0.2       # Time-warping knot displacement std
+  num_augmented_copies: 2    # Augmented copies per original sample
+
+# --- Output ---
+output:
+  results_dir: "outputs/results"
+  models_dir: "outputs/models"
+  figures_dir: "outputs/figures"

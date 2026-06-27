@@ -1,0 +1,280 @@
+"""
+CLI training script for the Human Activity Recognition pipeline.
+
+Provides a command-line interface to run the full training pipeline:
+    1. Load configuration
+    2. Preprocess and window the dataset
+    3. Extract features (optional TSFEL integration)
+    4. Train the from-scratch Decision Tree
+    5. Evaluate and print a classification report
+    6. Save results
+
+Usage:
+    python scripts/train.py                          # Use default config
+    python scripts/train.py --config config/config.yaml
+    python scripts/train.py --max-depth 10 --criterion gini
+    python scripts/train.py --augment               # Enable data augmentation
+"""
+
+import argparse
+import logging
+import os
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+
+# Add project root to path for imports
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.models.decision_tree import DecisionTree
+from src.evaluation.metrics import (
+    accuracy,
+    classification_report,
+    confusion_matrix,
+)
+from src.utils.helpers import load_config, set_seed, setup_logging
+
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Feature Extraction
+# ============================================================================
+
+
+def extract_statistical_features(X: np.ndarray) -> np.ndarray:
+    """Extract hand-crafted statistical features from windowed data.
+
+    Computes per-channel: mean, std, min, max, median, energy, zero-crossing
+    rate, and inter-quartile range — yielding a compact feature vector.
+    This implementation is fully vectorized using NumPy.
+
+    Parameters
+    ----------
+    X : np.ndarray of shape (n_samples, window_size, n_channels)
+        Windowed accelerometer data.
+
+    Returns
+    -------
+    np.ndarray of shape (n_samples, n_channels × 8)
+        Statistical feature matrix.
+    """
+    X = np.asarray(X, dtype=np.float64)
+    
+    means = np.mean(X, axis=1)
+    stds = np.std(X, axis=1)
+    mins = np.min(X, axis=1)
+    maxs = np.max(X, axis=1)
+    medians = np.median(X, axis=1)
+    energies = np.sum(X ** 2, axis=1)
+    zcrs = np.sum(np.diff(np.sign(X), axis=1) != 0, axis=1)
+    iqrs = np.percentile(X, 75, axis=1) - np.percentile(X, 25, axis=1)
+
+    # Stack along a new axis to get (n_samples, 8, n_channels)
+    stacked = np.stack([means, stds, mins, maxs, medians, energies, zcrs, iqrs], axis=1)
+    
+    # Transpose to (n_samples, n_channels, 8) and flatten to (n_samples, n_channels * 8)
+    # to preserve the channel-first ordering of features per sample
+    features = np.transpose(stacked, (0, 2, 1)).reshape(X.shape[0], -1)
+    return features
+
+
+# ============================================================================
+# Main Pipeline
+# ============================================================================
+
+def main() -> None:
+    """Run the full training pipeline."""
+    args = parse_args()
+    setup_logging()
+
+    logger.info("=" * 70)
+    logger.info("  Human Activity Recognition — Training Pipeline")
+    logger.info("=" * 70)
+
+    # ---- Load configuration ----
+    config = load_config(args.config)
+
+    # Override config with CLI arguments
+    if args.max_depth is not None:
+        config["decision_tree"]["max_depth"] = args.max_depth
+    if args.criterion is not None:
+        config["decision_tree"]["criterion"] = args.criterion
+    if args.seed is not None:
+        config["training"]["random_seed"] = args.seed
+
+    seed = config["training"]["random_seed"]
+    set_seed(seed)
+
+    # ---- Load data ----
+    logger.info("Loading and preprocessing data...")
+
+    # Try to import and use the preprocessing pipeline
+    try:
+        from src.data.preprocessing import load_and_split_dataset
+        X_train, X_test, y_train, y_test = load_and_split_dataset(config)
+    except FileNotFoundError:
+        logger.warning(
+            "UCI HAR Dataset not found at configured path. "
+            "Using sklearn's built-in dataset for demonstration."
+        )
+        # Fallback: generate synthetic data for demo purposes
+        from sklearn.datasets import make_classification
+        X_flat, y = make_classification(
+            n_samples=300, n_features=24, n_classes=6,
+            n_informative=18, n_clusters_per_class=1,
+            random_state=seed,
+        )
+        from sklearn.model_selection import train_test_split
+        X_train_flat, X_test_flat, y_train, y_test = train_test_split(
+            X_flat, y, test_size=0.3, random_state=seed, stratify=y,
+        )
+        # Skip windowed feature extraction for synthetic data
+        X_train_features = X_train_flat
+        X_test_features = X_test_flat
+        logger.info("Synthetic data: Train=%s, Test=%s", X_train_features.shape, X_test_features.shape)
+        _run_training(config, X_train_features, X_test_features, y_train, y_test)
+        return
+
+    # ---- Data augmentation (optional) ----
+    if args.augment or config.get("augmentation", {}).get("enabled", False):
+        from src.data.augmentation import augment_dataset
+        logger.info("Applying data augmentation...")
+        X_train, y_train = augment_dataset(X_train, y_train, config, seed=seed)
+
+    # ---- Feature extraction ----
+    logger.info("Extracting statistical features...")
+    X_train_features = extract_statistical_features(X_train)
+    X_test_features = extract_statistical_features(X_test)
+
+    logger.info(
+        "Feature matrix: Train=%s, Test=%s",
+        X_train_features.shape, X_test_features.shape,
+    )
+
+    _run_training(config, X_train_features, X_test_features, y_train, y_test)
+
+
+def _run_training(
+    config: dict,
+    X_train: np.ndarray,
+    X_test: np.ndarray,
+    y_train: np.ndarray,
+    y_test: np.ndarray,
+) -> None:
+    """Train, evaluate, and report results."""
+
+    # ---- Scaling ----
+    if config["training"].get("scaling", True):
+        scaler = StandardScaler()
+        X_train = scaler.fit_transform(X_train)
+        X_test = scaler.transform(X_test)
+
+    # ---- Train the from-scratch Decision Tree ----
+    dt_config = config["decision_tree"]
+    tree = DecisionTree(
+        max_depth=dt_config["max_depth"],
+        min_samples_split=dt_config["min_samples_split"],
+        criterion=dt_config["criterion"],
+    )
+
+    logger.info("Training %s...", tree)
+    start = time.perf_counter()
+    tree.fit(X_train, y_train)
+    train_time = time.perf_counter() - start
+
+    # ---- Predict ----
+    start = time.perf_counter()
+    y_pred = tree.predict(X_test)
+    pred_time = time.perf_counter() - start
+
+    # ---- Evaluate ----
+    acc = accuracy(y_test, y_pred)
+    cm = confusion_matrix(y_test, y_pred)
+
+    activity_names = list(config.get("activities", {}).values())
+    if not activity_names:
+        activity_names = [f"Class {i}" for i in sorted(np.unique(y_test))]
+
+    report = classification_report(y_test, y_pred, target_names=activity_names)
+
+    # ---- Print results ----
+    print("\n" + "=" * 70)
+    print("  RESULTS — From-Scratch Decision Tree")
+    print("=" * 70)
+    print(f"  Model:           {tree}")
+    print(f"  Tree Depth:      {tree.get_depth()}")
+    print(f"  Leaf Nodes:      {tree.get_n_leaves()}")
+    print(f"  Training Time:   {train_time:.2f}s")
+    print(f"  Prediction Time: {pred_time:.4f}s")
+    print(f"  Accuracy:        {acc:.4f} ({acc * 100:.1f}%)")
+    print("-" * 70)
+    print("  Classification Report:")
+    print(report)
+    print("-" * 70)
+    print("  Confusion Matrix:")
+    print(cm)
+    print("=" * 70)
+
+    # ---- Save results (optional) ----
+    output_dir = config.get("output", {}).get("results_dir", "outputs/results")
+    os.makedirs(output_dir, exist_ok=True)
+
+    results_path = os.path.join(output_dir, "training_results.txt")
+    with open(results_path, "w", encoding="utf-8") as f:
+        f.write(f"Model: {tree}\n")
+        f.write(f"Accuracy: {acc:.4f}\n")
+        f.write(f"Training Time: {train_time:.2f}s\n\n")
+        f.write("Classification Report:\n")
+        f.write(report + "\n\n")
+        f.write("Confusion Matrix:\n")
+        f.write(str(cm) + "\n")
+
+    logger.info("Results saved to %s", results_path)
+
+
+# ============================================================================
+# Argument Parsing
+# ============================================================================
+
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Train a Decision Tree on the UCI HAR Dataset",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python scripts/train.py
+  python scripts/train.py --max-depth 10 --criterion gini
+  python scripts/train.py --augment --seed 123
+        """,
+    )
+    parser.add_argument(
+        "--config", type=str, default="config/config.yaml",
+        help="Path to YAML configuration file (default: config/config.yaml)",
+    )
+    parser.add_argument(
+        "--max-depth", type=int, default=None,
+        help="Override maximum tree depth",
+    )
+    parser.add_argument(
+        "--criterion", type=str, choices=["entropy", "gini"], default=None,
+        help="Split criterion: entropy or gini",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=None,
+        help="Override random seed for reproducibility",
+    )
+    parser.add_argument(
+        "--augment", action="store_true",
+        help="Enable data augmentation",
+    )
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    main()
