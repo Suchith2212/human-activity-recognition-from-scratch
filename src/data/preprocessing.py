@@ -273,6 +273,11 @@ def load_and_split_dataset(
         len(X_train_raw), len(X_test_raw),
     )
 
+    if len(X_train_raw) == 0 or len(X_test_raw) == 0:
+        raise FileNotFoundError(
+            f"No windowed samples could be loaded from combined directory: {combined_dir}"
+        )
+
     # Merge and re-split with stratification for balanced evaluation
     X = np.concatenate([X_train_raw, X_test_raw])
     y = np.concatenate([y_train_raw, y_test_raw])
