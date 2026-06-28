@@ -196,4 +196,5 @@ def setup_logging(level: int = logging.INFO) -> None:
         level=level,
         format="%(asctime)s | %(name)-25s | %(levelname)-7s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
+        force=True,
     )
