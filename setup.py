@@ -15,14 +15,14 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 setup(
     name="har-recognition",
     version="1.0.0",
-    author="Dinesh Siddhartha",
+    author="Suchith",
     description=(
         "Human Activity Recognition using wearable sensor data — "
         "from-scratch ML implementations with production-grade engineering"
     ),
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/DineshSiddhartha/Human-Activity-Recognition-Project",
+    url="https://github.com/Suchith2212/human-activity-recognition-from-scratch",
     packages=find_packages(exclude=["notebooks", "notebooks.*", "tests", "tests.*", "scripts", "scripts.*"]),
     python_requires=">=3.9",
     install_requires=requirements,

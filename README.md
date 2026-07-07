@@ -41,8 +41,8 @@ This project builds a complete machine learning pipeline to classify **6 human a
 ### 1. Clone & Install
 
 ```bash
-git clone https://github.com/DineshSiddhartha/Human-Activity-Recognition-Project.git
-cd Human-Activity-Recognition-Project
+git clone https://github.com/Suchith2212/human-activity-recognition-from-scratch.git
+cd human-activity-recognition-from-scratch
 pip install -r requirements.txt
 ```
 
