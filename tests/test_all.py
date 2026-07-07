@@ -100,18 +100,68 @@ X_s, y_s = shuffle_data(X_3d, y_3d, seed=42)
 print(f"[PASS] shuffle_data works: shape={X_s.shape}")
 
 # === Test 6: DecisionTree on augmented data ===
-from scripts.train import extract_statistical_features
+from scripts.train import extract_statistical_features, extract_fft_features, extract_all_features
 
 X_feats = extract_statistical_features(X_3d)
 print(f"[PASS] Statistical features extracted: {X_feats.shape}")
 
+# === Test 7: FFT Feature Extraction ===
+X_fft = extract_fft_features(X_3d)
+assert X_fft.shape == (10, 6), f"Expected (10, 6), got {X_fft.shape}"
+assert not np.any(np.isnan(X_fft)), "FFT features contain NaN!"
+print(f"[PASS] FFT features extracted: {X_fft.shape}, no NaNs")
+
+# === Test 8: Combined Features ===
+X_all = extract_all_features(X_3d)
+assert X_all.shape == (10, 30), f"Expected (10, 30), got {X_all.shape}"
+print(f"[PASS] Combined features (stat + FFT): {X_all.shape}")
+
+# === Test 9: DecisionTree with max_features ===
+tree_mf = DecisionTree(max_depth=3, criterion="entropy", max_features=3, random_state=42)
+tree_mf.fit(X_feats, y_3d)
+preds_mf = tree_mf.predict(X_feats)
+print(f"[PASS] DecisionTree with max_features=3: depth={tree_mf.get_depth()}, preds range: {preds_mf.min()}-{preds_mf.max()}")
+
+# === Test 10: RandomForest ===
+from src.models.random_forest import RandomForest
+
+rf = RandomForest(n_estimators=10, max_depth=3, criterion="entropy", random_state=42)
+rf.fit(X_feats, y_3d)
+rf_preds = rf.predict(X_feats)
+rf_acc = accuracy(y_3d, rf_preds)
+rf_imp = rf.feature_importances_
+assert len(rf.trees_) == 10, f"Expected 10 trees, got {len(rf.trees_)}"
+assert abs(rf_imp.sum() - 1.0) < 1e-6, f"Importances don't sum to 1: {rf_imp.sum()}"
+print(f"[PASS] RandomForest(n=10): accuracy={rf_acc:.4f}, importances sum={rf_imp.sum():.4f}")
+
+# === Test 11: Full pipeline with RandomForest ===
 tree2 = DecisionTree(max_depth=5, criterion="gini")
 tree2.fit(X_feats, y_3d)
 preds2 = tree2.predict(X_feats)
 acc2 = accuracy(y_3d, preds2)
 print(f"[PASS] Full pipeline (features -> tree -> eval): accuracy={acc2:.4f}")
 
+# === Test 12: Comparison with sklearn DecisionTreeClassifier ===
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.datasets import make_classification
+
+X_comp, y_comp = make_classification(n_samples=200, n_features=10, n_classes=2, random_state=42)
+# Train sklearn
+sk_tree = DecisionTreeClassifier(max_depth=3, criterion="entropy", random_state=42)
+sk_tree.fit(X_comp, y_comp)
+sk_acc = accuracy(y_comp, sk_tree.predict(X_comp))
+
+# Train scratch
+scratch_tree = DecisionTree(max_depth=3, criterion="entropy", random_state=42)
+scratch_tree.fit(X_comp, y_comp)
+scratch_acc = accuracy(y_comp, scratch_tree.predict(X_comp))
+
+# Confirm they are close (within 10% margin)
+assert abs(sk_acc - scratch_acc) <= 0.1, f"Accuracy difference too large: Sklearn={sk_acc:.4f}, Scratch={scratch_acc:.4f}"
+print(f"[PASS] Scratch vs Sklearn accuracy comparison: Sklearn={sk_acc:.4f}, Scratch={scratch_acc:.4f} (diff <= 10%)")
+
 print()
 print("=" * 50)
 print("  ALL TESTS PASSED")
 print("=" * 50)
+

@@ -89,6 +89,12 @@ class DecisionTree:
         Minimum number of samples required to split an internal node.
     criterion : {"entropy", "gini"}, default="entropy"
         Function to measure the quality of a split.
+    max_features : int or None, default=None
+        Number of features to consider when looking for the best split.
+        If ``None``, all features are considered.  Set to ``int(sqrt(n))``
+        for Random Forest decorrelation.
+    random_state : int or None, default=None
+        Seed for the random number generator used in feature subsetting.
 
     Attributes
     ----------
@@ -116,6 +122,8 @@ class DecisionTree:
         max_depth: int = 5,
         min_samples_split: int = 2,
         criterion: Literal["entropy", "gini"] = "entropy",
+        max_features: Optional[int] = None,
+        random_state: Optional[int] = None,
     ) -> None:
         if criterion not in ("entropy", "gini"):
             raise ValueError(
@@ -125,6 +133,9 @@ class DecisionTree:
         self.max_depth = max_depth
         self.min_samples_split = min_samples_split
         self.criterion = criterion
+        self.max_features = max_features
+        self.random_state = random_state
+        self._rng = np.random.RandomState(random_state)
 
         # Fitted attributes (populated after .fit())
         self.root_: Optional[Node] = None
@@ -298,12 +309,23 @@ class DecisionTree:
         Uses midpoints between consecutive sorted unique values as candidate
         thresholds, which is the standard CART approach.  This halves the
         search space compared to using raw unique values and avoids ties.
+
+        When ``max_features`` is set, only a random subset of features is
+        evaluated at each split, which decorrelates trees in a Random Forest.
         """
         best_gain = -1.0
         best_idx: Optional[int] = None
         best_thresh: Optional[float] = None
 
-        for feat_idx in range(n_features):
+        # Select feature indices to evaluate
+        if self.max_features is not None and self.max_features < n_features:
+            feature_indices = self._rng.choice(
+                n_features, size=self.max_features, replace=False,
+            )
+        else:
+            feature_indices = np.arange(n_features)
+
+        for feat_idx in feature_indices:
             sorted_unique = np.unique(X[:, feat_idx])
             # Use midpoints between consecutive values as candidate thresholds
             midpoints = (sorted_unique[:-1] + sorted_unique[1:]) / 2.0

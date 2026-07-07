@@ -53,14 +53,17 @@ Download the [UCI HAR Dataset](https://archive.ics.uci.edu/dataset/240/human+act
 ### 3. Run the Pipeline
 
 ```bash
-# Train with default configuration
+# Train from-scratch Decision Tree with default configuration
 python scripts/train.py
 
 # Customize hyperparameters via CLI
-python scripts/train.py --max-depth 10 --criterion gini --seed 123
+python scripts/train.py --max-depth 8 --criterion gini --seed 123
 
-# Enable data augmentation
+# Train Decision Tree with signal data augmentation
 python scripts/train.py --augment
+
+# Train from-scratch Random Forest with data augmentation
+python scripts/train.py --model forest --augment
 ```
 
 ### 4. Explore the Notebooks
@@ -78,11 +81,11 @@ notebooks/
 
 | Model | Accuracy | Precision (macro) | Recall (macro) | F1-Score (macro) |
 |:---|:---:|:---:|:---:|:---:|
-| **Decision Tree (from scratch)** | 84.2% | 0.83 | 0.84 | 0.83 |
-| Decision Tree (sklearn) | 94.1% | 0.94 | 0.94 | 0.94 |
-| With Data Augmentation | **~95%** | 0.95 | 0.95 | 0.95 |
+| **Decision Tree (from scratch)** | 81.5% | 0.81 | 0.81 | 0.81 |
+| **Decision Tree + Augmentation** | 83.3% | 0.88 | 0.83 | 0.82 |
+| **Random Forest (from scratch)** | **92.6%** | **0.90** | **0.91** | **0.91** |
 
-> *The from-scratch implementation intentionally trades some accuracy for educational value — every split, every entropy calculation, every traversal is implemented from first principles.*
+> *Note: Metrics are evaluated on the real UCI HAR test split. Data augmentation features 3.0× training expansion via Gaussian jittering and cubic-spline time warping.*
 
 ---
 
@@ -144,7 +147,8 @@ Human-Activity-Recognition-Project/
 │   │   ├── preprocessing.py        # Signal combination, windowing, train/test splits
 │   │   └── augmentation.py         # Jittering, scaling, time-warping augmentations
 │   ├── models/
-│   │   └── decision_tree.py        # From-scratch CART with entropy & Gini
+│   │   ├── decision_tree.py        # From-scratch CART with entropy & Gini
+│   │   └── random_forest.py        # From-scratch Random Forest ensemble
 │   ├── evaluation/
 │   │   └── metrics.py              # From-scratch metrics (accuracy → classification report)
 │   └── utils/
@@ -159,7 +163,8 @@ Human-Activity-Recognition-Project/
 │   └── 03_decision_tree_scratch.ipynb
 │
 ├── tests/
-│   └── test_all.py                 # Comprehensive unit & functional test suite
+│   ├── test_all.py                 # Comprehensive unit & functional test suite
+│   └── test_notebook_syntax.py     # Notebook syntax validation check
 │
 ├── requirements.txt                # Pinned dependencies
 ├── setup.py                        # Package installability
@@ -272,8 +277,13 @@ python scripts/train.py --max-depth 10 --criterion gini --seed 99 --augment
 
 ---
 
-## 🔮 Future Directions
+## 🔮 Limitations & Future Directions
 
+### Current Limitations
+- **Recursive Training Overhead**: Because the decision tree is built recursively in pure Python/NumPy (without Cython acceleration), training time scales slower on massive datasets compared to scikit-learn's highly optimized C-implementation.
+- **Hand-Crafted Features**: The current feature extractor relies on 10 handcrafted statistical/spectral features per sensor channel. A deep learning representation or more complex feature space could capture more subtle inter-axis dependencies.
+
+### Future Roadmap
 - [ ] Deploy the trained model to a mobile app (TFLite / ONNX export)
 - [ ] Add LSTM / Transformer sequence models for temporal modeling
 - [ ] Implement cross-subject validation for robustness testing

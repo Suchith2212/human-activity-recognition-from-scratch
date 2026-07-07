@@ -145,7 +145,6 @@ def timer(func: F) -> F:
         result = func(*args, **kwargs)
         elapsed = time.perf_counter() - start
         logger.info("[TIMER] %s executed in %.2fs", func.__name__, elapsed)
-        print(f"[TIMER] {func.__name__} executed in {elapsed:.2f}s")
         return result
 
     return cast(F, wrapper)

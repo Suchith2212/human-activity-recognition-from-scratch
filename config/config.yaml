@@ -32,10 +32,7 @@ signal:
 
 # --- Feature Extraction ---
 features:
-  use_tsfel: true            # Use TSFEL for automatic feature extraction
-  tsfel_domains:             # Which TSFEL feature domains to extract
-    - temporal
-    - statistical
+  fft_enabled: true          # Extract FFT spectral energy and dominant frequency
 
 # --- Decision Tree (from scratch) ---
 decision_tree:
@@ -48,6 +45,11 @@ training:
   test_size: 0.3
   random_seed: 42
   scaling: true              # Apply StandardScaler normalization
+
+# --- Random Forest (from scratch) ---
+random_forest:
+  n_estimators: 100          # Number of trees in the ensemble
+  # max_depth and criterion are inherited from decision_tree section
 
 # --- Data Augmentation ---
 augmentation:

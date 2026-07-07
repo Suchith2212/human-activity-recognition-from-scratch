@@ -1,6 +1,6 @@
 """Model implementations subpackage."""
 
-__all__ = ["DecisionTree"]
+__all__ = ["DecisionTree", "RandomForest"]
 
 
 def __getattr__(name: str):
@@ -9,4 +9,9 @@ def __getattr__(name: str):
         from src.models.decision_tree import DecisionTree
         return DecisionTree
 
+    if name == "RandomForest":
+        from src.models.random_forest import RandomForest
+        return RandomForest
+
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+

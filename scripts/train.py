@@ -4,8 +4,8 @@ CLI training script for the Human Activity Recognition pipeline.
 Provides a command-line interface to run the full training pipeline:
     1. Load configuration
     2. Preprocess and window the dataset
-    3. Extract features (optional TSFEL integration)
-    4. Train the from-scratch Decision Tree
+    3. Extract features (statistical + FFT spectral)
+    4. Train the from-scratch Decision Tree or Random Forest
     5. Evaluate and print a classification report
     6. Save results
 
@@ -14,6 +14,7 @@ Usage:
     python scripts/train.py --config config/config.yaml
     python scripts/train.py --max-depth 10 --criterion gini
     python scripts/train.py --augment               # Enable data augmentation
+    python scripts/train.py --model forest --augment # Random Forest + augmentation
 """
 
 import argparse
@@ -31,6 +32,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.models.decision_tree import DecisionTree
+from src.models.random_forest import RandomForest
 from src.evaluation.metrics import (
     accuracy,
     classification_report,
@@ -81,6 +83,67 @@ def extract_statistical_features(X: np.ndarray) -> np.ndarray:
     # to preserve the channel-first ordering of features per sample
     features = np.transpose(stacked, (0, 2, 1)).reshape(X.shape[0], -1)
     return features
+
+
+def extract_fft_features(X: np.ndarray) -> np.ndarray:
+    """Extract frequency-domain features from windowed accelerometer data.
+
+    Computes per-channel:
+        - **Spectral Energy**: Sum of squared FFT magnitudes, capturing
+          the total energy content across all frequency bins.
+        - **Dominant Frequency**: The frequency bin index with the highest
+          FFT magnitude, indicating the primary oscillation pattern
+          (e.g., walking cadence vs. static posture).
+
+    These features help the model distinguish between activities that
+    look similar in the time domain but differ in frequency content
+    (e.g., WALKING vs. WALKING_UPSTAIRS).
+
+    Parameters
+    ----------
+    X : np.ndarray of shape (n_samples, window_size, n_channels)
+        Windowed accelerometer data.
+
+    Returns
+    -------
+    np.ndarray of shape (n_samples, n_channels × 2)
+        FFT feature matrix (spectral energy + dominant frequency per channel).
+    """
+    X = np.asarray(X, dtype=np.float64)
+
+    # Compute FFT along the time axis (axis=1), take only positive frequencies
+    fft_vals = np.fft.rfft(X, axis=1)
+    fft_magnitudes = np.abs(fft_vals)
+
+    # Spectral energy: sum of squared magnitudes per channel
+    spectral_energy = np.sum(fft_magnitudes ** 2, axis=1)
+
+    # Dominant frequency: index of the max magnitude per channel
+    # Skip DC component (index 0) to find the dominant oscillatory frequency
+    dominant_freq = np.argmax(fft_magnitudes[:, 1:, :], axis=1) + 1
+
+    # Stack: (n_samples, 2, n_channels) -> flatten to (n_samples, n_channels * 2)
+    stacked = np.stack([spectral_energy, dominant_freq.astype(np.float64)], axis=1)
+    features = np.transpose(stacked, (0, 2, 1)).reshape(X.shape[0], -1)
+    return features
+
+
+def extract_all_features(X: np.ndarray) -> np.ndarray:
+    """Extract combined statistical + FFT features from windowed data.
+
+    Parameters
+    ----------
+    X : np.ndarray of shape (n_samples, window_size, n_channels)
+        Windowed accelerometer data.
+
+    Returns
+    -------
+    np.ndarray of shape (n_samples, n_channels × 10)
+        Combined feature matrix (8 statistical + 2 FFT features per channel).
+    """
+    stat_feats = extract_statistical_features(X)
+    fft_feats = extract_fft_features(X)
+    return np.hstack([stat_feats, fft_feats])
 
 
 # ============================================================================
@@ -137,7 +200,7 @@ def main() -> None:
         X_train_features = X_train_flat
         X_test_features = X_test_flat
         logger.info("Synthetic data: Train=%s, Test=%s", X_train_features.shape, X_test_features.shape)
-        _run_training(config, X_train_features, X_test_features, y_train, y_test)
+        _run_training(config, X_train_features, X_test_features, y_train, y_test, model_type=args.model)
         return
 
     # ---- Data augmentation (optional) ----
@@ -146,17 +209,17 @@ def main() -> None:
         logger.info("Applying data augmentation...")
         X_train, y_train = augment_dataset(X_train, y_train, config, seed=seed)
 
-    # ---- Feature extraction ----
-    logger.info("Extracting statistical features...")
-    X_train_features = extract_statistical_features(X_train)
-    X_test_features = extract_statistical_features(X_test)
+    # ---- Feature extraction (statistical + FFT) ----
+    logger.info("Extracting statistical + FFT features...")
+    X_train_features = extract_all_features(X_train)
+    X_test_features = extract_all_features(X_test)
 
     logger.info(
         "Feature matrix: Train=%s, Test=%s",
         X_train_features.shape, X_test_features.shape,
     )
 
-    _run_training(config, X_train_features, X_test_features, y_train, y_test)
+    _run_training(config, X_train_features, X_test_features, y_train, y_test, model_type=args.model)
 
 
 def _run_training(
@@ -165,6 +228,7 @@ def _run_training(
     X_test: np.ndarray,
     y_train: np.ndarray,
     y_test: np.ndarray,
+    model_type: str = "tree",
 ) -> None:
     """Train, evaluate, and report results."""
 
@@ -174,22 +238,36 @@ def _run_training(
         X_train = scaler.fit_transform(X_train)
         X_test = scaler.transform(X_test)
 
-    # ---- Train the from-scratch Decision Tree ----
+    # ---- Build model ----
     dt_config = config["decision_tree"]
-    tree = DecisionTree(
-        max_depth=dt_config["max_depth"],
-        min_samples_split=dt_config["min_samples_split"],
-        criterion=dt_config["criterion"],
-    )
+    seed = config["training"]["random_seed"]
 
-    logger.info("Training %s...", tree)
+    if model_type == "forest":
+        rf_config = config.get("random_forest", {})
+        model = RandomForest(
+            n_estimators=rf_config.get("n_estimators", 100),
+            max_depth=dt_config["max_depth"],
+            min_samples_split=dt_config["min_samples_split"],
+            criterion=dt_config["criterion"],
+            random_state=seed,
+        )
+        model_label = "From-Scratch Random Forest"
+    else:
+        model = DecisionTree(
+            max_depth=dt_config["max_depth"],
+            min_samples_split=dt_config["min_samples_split"],
+            criterion=dt_config["criterion"],
+        )
+        model_label = "From-Scratch Decision Tree"
+
+    logger.info("Training %s...", model)
     start = time.perf_counter()
-    tree.fit(X_train, y_train)
+    model.fit(X_train, y_train)
     train_time = time.perf_counter() - start
 
     # ---- Predict ----
     start = time.perf_counter()
-    y_pred = tree.predict(X_test)
+    y_pred = model.predict(X_test)
     pred_time = time.perf_counter() - start
 
     # ---- Evaluate ----
@@ -204,11 +282,15 @@ def _run_training(
 
     # ---- Print results ----
     print("\n" + "=" * 70)
-    print("  RESULTS — From-Scratch Decision Tree")
+    print(f"  RESULTS — {model_label}")
     print("=" * 70)
-    print(f"  Model:           {tree}")
-    print(f"  Tree Depth:      {tree.get_depth()}")
-    print(f"  Leaf Nodes:      {tree.get_n_leaves()}")
+    print(f"  Model:           {model}")
+    if model_type == "tree":
+        print(f"  Tree Depth:      {model.get_depth()}")
+        print(f"  Leaf Nodes:      {model.get_n_leaves()}")
+    else:
+        print(f"  Num Trees:       {model.n_estimators}")
+        print(f"  Max Depth:       {model.max_depth}")
     print(f"  Training Time:   {train_time:.2f}s")
     print(f"  Prediction Time: {pred_time:.4f}s")
     print(f"  Accuracy:        {acc:.4f} ({acc * 100:.1f}%)")
@@ -226,7 +308,7 @@ def _run_training(
 
     results_path = os.path.join(output_dir, "training_results.txt")
     with open(results_path, "w", encoding="utf-8") as f:
-        f.write(f"Model: {tree}\n")
+        f.write(f"Model: {model}\n")
         f.write(f"Accuracy: {acc:.4f}\n")
         f.write(f"Training Time: {train_time:.2f}s\n\n")
         f.write("Classification Report:\n")
@@ -244,18 +326,23 @@ def _run_training(
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Train a Decision Tree on the UCI HAR Dataset",
+        description="Train a Decision Tree or Random Forest on the UCI HAR Dataset",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python scripts/train.py
   python scripts/train.py --max-depth 10 --criterion gini
   python scripts/train.py --augment --seed 123
+  python scripts/train.py --model forest --augment
         """,
     )
     parser.add_argument(
         "--config", type=str, default="config/config.yaml",
         help="Path to YAML configuration file (default: config/config.yaml)",
+    )
+    parser.add_argument(
+        "--model", type=str, choices=["tree", "forest"], default="tree",
+        help="Model type: 'tree' for Decision Tree, 'forest' for Random Forest (default: tree)",
     )
     parser.add_argument(
         "--max-depth", type=int, default=None,
